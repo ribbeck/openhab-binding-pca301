@@ -41,6 +41,9 @@ public class PCA301Binding extends AbstractBinding<PCA301BindingProvider> implem
 	
 	private final Map<Integer, Integer> channels = new HashMap<Integer, Integer>();
 	
+	private final Map<String, State> cache = new HashMap<String, State>();
+	
+	
 	JeeLinkDevice device = null;
 
 
@@ -162,6 +165,14 @@ public class PCA301Binding extends AbstractBinding<PCA301BindingProvider> implem
 				device = null;
 			}
 			
+			// reset channels and cache
+			synchronized (channels) {
+				channels.clear();
+			}
+			synchronized (cache) {
+				cache.clear();
+			}
+			
 			// read serial port name
 			final String port = (String) config.get(KEY_PORT);
 			if (StringUtils.isEmpty(port)) {
@@ -184,13 +195,7 @@ public class PCA301Binding extends AbstractBinding<PCA301BindingProvider> implem
 		}
 		
 		logger.debug("Received for " + String.valueOf(address) + " state=" + (state ? "on" : "off"));
-		for (PCA301BindingProvider provider : providers) {
-			
-			final String itemName = provider.getItemName(address, Property.STATE.toString());
-			if (itemName != null) {
-				eventPublisher.postUpdate(itemName, state ? OnOffType.ON : OnOffType.OFF);
-			}
-		}
+		publishUpdate(address, Property.STATE, state ? OnOffType.ON : OnOffType.OFF);
 	}
 
 	@Override
@@ -200,17 +205,38 @@ public class PCA301Binding extends AbstractBinding<PCA301BindingProvider> implem
 			channels.put(Integer.valueOf(address), Integer.valueOf(channel));
 		}
 		
-		logger.debug("Received for " + String.valueOf(address) + " power=" + String.valueOf(power) + " and consumption=" + String.valueOf(consumption));
+		final String powerValue = Double.toString(power);
+		final String consumptionValue = Double.toString(consumption);
+		
+		logger.debug("Received for " + String.valueOf(address) + " power=" + powerValue + " and consumption=" + consumptionValue);
+		publishUpdate(address, Property.POWER, DecimalType.valueOf(powerValue));
+		publishUpdate(address, Property.CONSUMPTION, DecimalType.valueOf(consumptionValue));
+	}
+	
+	/**
+	 * Sends an update event to openHAB for passed value if necessary.
+	 * @param address PCA301 device address
+	 * @param property PCA301 property
+	 * @param newValue new value of property
+	 */
+	private void publishUpdate(int address, Property property, State newValue) {
+		
 		for (PCA301BindingProvider provider : providers) {
 			
-			final String itemNamePower = provider.getItemName(address, Property.POWER.toString());
-			if (itemNamePower != null) {
-				eventPublisher.postUpdate(itemNamePower, new DecimalType(power));
-			}
-			
-			final String itemNameConsumption = provider.getItemName(address, Property.CONSUMPTION.toString());
-			if (itemNameConsumption != null) {
-				eventPublisher.postUpdate(itemNameConsumption, new DecimalType(power));
+			// check if item exists for passed property
+			final String itemName = provider.getItemName(address, property.toString());
+			if (itemName != null) {
+				
+				// get and refresh current state
+				State currentValue = null;
+				synchronized (cache) {
+					currentValue = cache.put(itemName, newValue);
+				}
+				
+				if (!newValue.equals(currentValue)) {
+					// value has changed
+					eventPublisher.postUpdate(itemName, newValue);
+				}
 			}
 		}
 	}
