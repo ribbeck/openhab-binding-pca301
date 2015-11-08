@@ -18,7 +18,7 @@ import java.text.ParseException;
  * @since 1.7.2
  * @see <a href="http://forum.fhem.de/index.php?topic=11648.0">Protocol Analysis (german)</a>
  */
-public class JeeLinkMessage {
+public class JeeLinkMessage implements Comparable<JeeLinkMessage> {
 	
 	public final static int CMD_VALUES		= 0x04;
 	public final static int CMD_STATE		= 0x05;
@@ -86,6 +86,49 @@ public class JeeLinkMessage {
 	/** Returns the total power consumption in kWh. */
 	public double getConsumption() {
 		return consumption / 100.0;
+	}
+	
+	@Override
+	public boolean equals(Object obj) {
+		if (obj == null) {
+			return false;
+		}
+		if (obj == this) {
+			return true;
+		}
+		
+		if (obj instanceof JeeLinkMessage) {
+			return compareTo((JeeLinkMessage)obj) == 0;
+		}
+		
+		return false;
+	}
+	
+	@Override
+	public int compareTo(JeeLinkMessage o) {
+		if (o == null) {
+			return 1;
+		}
+		if (address != o.address) {
+			return (address - o.address);
+		}
+		if (channel != o.channel) {
+			return (channel - o.channel);
+		}
+		if (cmd != o.cmd) {
+			return (cmd - o.cmd);
+		}
+		if (param != o.param) {
+			return (param - o.param);
+		}
+		if (power != o.power) {
+			return (power - o.power);
+		}
+		if (consumption != o.consumption) {
+			return (consumption - o.consumption);
+		}
+				
+		return 0;
 	}
 
 	/** 

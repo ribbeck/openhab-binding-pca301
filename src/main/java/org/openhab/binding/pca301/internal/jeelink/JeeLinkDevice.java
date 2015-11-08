@@ -26,10 +26,16 @@ import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.text.ParseException;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.TooManyListenersException;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 import org.openhab.binding.pca301.internal.jeelink.JeeLinkFilterSketch.InvalidSketchException;
 import org.slf4j.Logger;
@@ -46,8 +52,11 @@ public class JeeLinkDevice implements SerialPortEventListener {
 	
 	private final static Logger logger = LoggerFactory.getLogger(JeeLinkDevice.class);
 	
+	private final static int RETRY_DELAY	= 3; // in seconds
 	
 	private String port = null;
+	private final int retryCount;
+	
 	private SerialPort serialPort = null;
 	private InputStream input = null;
 	private OutputStream output = null;
@@ -55,17 +64,25 @@ public class JeeLinkDevice implements SerialPortEventListener {
 	private BufferedWriter writer = null;
 	private boolean isOpen = false;
 	
+	/** Collection of listeners. Access must be synchronized. */
 	private final Set<JeeLinkListener> listeners = new HashSet<JeeLinkListener>();
 	
 	private final List<JeeLinkFilter> filters = new ArrayList<JeeLinkFilter>();
+	
+	
+	/** Mapping of message and pending retry tasks. Access must be synchronized. */
+	private final Map<JeeLinkMessage, Future<?>> pendingTasks = new HashMap<JeeLinkMessage, Future<?>>();
+	/** Executor to run retry task. Access must be synchronized over {@link #pendingTasks}. */
+	private ScheduledExecutorService executor = null;
 	
 	
 	/**
 	 * Constructor
 	 * @param port Serial port which is used to connect the JeeLink device (e.g. "/dev/ttyUSB0")
 	 */
-	public JeeLinkDevice(String port) {
+	public JeeLinkDevice(String port, int retryCount) {
 		this.port = port;
+		this.retryCount = retryCount;
 		
 		filters.add(new JeeLinkFilterRegex("^OK 24 (.*)$"));
 		filters.add(new JeeLinkFilterRegex("^L 24 \\d+ \\d+ : (.*)$"));
@@ -127,6 +144,10 @@ public class JeeLinkDevice implements SerialPortEventListener {
 			logger.error("Internal error", e);
 		}
 		
+		synchronized (pendingTasks) {
+			executor = Executors.newSingleThreadScheduledExecutor();
+		}
+		
 		// enable quite mode
 		sendMessage("1q");
 	}
@@ -143,6 +164,20 @@ public class JeeLinkDevice implements SerialPortEventListener {
 		
 		isOpen = false;
 		
+		// stop retry tasks
+		synchronized (pendingTasks) {
+			for (Future<?> future : pendingTasks.values()) {
+				future.cancel(false);
+			}
+			pendingTasks.clear();
+			
+			if (executor != null) {
+				executor.shutdownNow();
+				executor = null;
+			}
+		}
+		
+				
 		if (serialPort != null) {
 			serialPort.removeEventListener();
 		}
@@ -211,7 +246,8 @@ public class JeeLinkDevice implements SerialPortEventListener {
 		logger.debug("Change state of " + String.valueOf(address) + " to " + String.valueOf(state));
 		final int param = state ? JeeLinkMessage.PARAM_ON : JeeLinkMessage.PARAM_OFF; 
 		final JeeLinkMessage msg = new JeeLinkMessage(address, channel, JeeLinkMessage.CMD_STATE, param);
-		sendMessage(msg);
+		
+		sendMessage(msg, retryCount);
 	}
 	
 	/**
@@ -237,9 +273,43 @@ public class JeeLinkDevice implements SerialPortEventListener {
 		final JeeLinkMessage msg = new JeeLinkMessage(address, channel, JeeLinkMessage.CMD_VALUES, JeeLinkMessage.PARAM_RESET);
 		sendMessage(msg);
 	}
-		
 	
-	private void sendMessage(JeeLinkMessage msg) {
+	/**
+	 * Send the specified message with JeeLink device
+	 * @param msg Message to PCA301 device
+	 * @param retryCount Number of maximal retries. With zero or less behavior is same as {@link #sendMessage(JeeLinkMessage)}.
+	 */
+	protected void sendMessage(JeeLinkMessage msg, int retryCount) {
+		
+		if (retryCount > 0) {
+			
+			// create retry task
+			final Runnable task = new RetrySendTask(this, msg, retryCount);
+			
+			synchronized (pendingTasks) {
+				
+				if (executor != null) {
+					
+					logger.debug("Create pending task for address=" + msg.getAddress() + " cmd=" + msg.getCommand());
+					
+					// schedule task and cancel old one for same message
+					final Future<?> future = executor.schedule(task, RETRY_DELAY, TimeUnit.SECONDS);
+					final Future<?> old = pendingTasks.put(msg, future);
+					if (old != null) {
+						old.cancel(false);
+					}
+				}
+			}
+		}
+		
+		sendMessage(msg);
+	}
+	
+	/**
+	 * Send the specified message with JeeLink device
+	 * @param msg Message to PCA301 device
+	 */
+	protected void sendMessage(JeeLinkMessage msg) {
 		
 		final String text = msg.toSerialString();
 		sendMessage(text);
@@ -296,6 +366,9 @@ public class JeeLinkDevice implements SerialPortEventListener {
 			}
 			
 			if (msg != null) {
+				
+				clearPendingTasks(msg);
+				
 				final int cmd = msg.getCommand();
 				final boolean state = msg.getParameter() == JeeLinkMessage.PARAM_ON ? true : false;
 				
@@ -343,4 +416,32 @@ public class JeeLinkDevice implements SerialPortEventListener {
 		
 	}
 	
+	private void clearPendingTasks(final JeeLinkMessage msg) {
+		
+		final Set<JeeLinkMessage> keys;
+		synchronized (pendingTasks) {
+			
+			if (pendingTasks.isEmpty()) {
+				return;
+			}
+			
+			keys = new HashSet<JeeLinkMessage>(pendingTasks.size());
+			keys.addAll(pendingTasks.keySet());
+		}
+		
+		for (JeeLinkMessage key : keys) {
+			if ((key.getAddress() == msg.getAddress()) && (key.getCommand() == msg.getCommand()) && (key.getParameter() == msg.getParameter())) {
+				
+				synchronized (pendingTasks) {
+					
+					logger.debug("Remove pending task for address=" + msg.getAddress() + " cmd=" + msg.getCommand());
+					final Future<?> future = pendingTasks.remove(key);
+					if (future != null) {
+						future.cancel(false);
+					}
+				}
+			}
+		}
+		
+	}
 }

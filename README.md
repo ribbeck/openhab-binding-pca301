@@ -9,7 +9,8 @@ Be sure that the dependency org.openhab.io.transport.serial-1.x.x,jar is install
 ## Configuration
 The following configuration in openhab.cfg is required:
 
-    pca301:port=<USB port of JeeLink device> (e.q. /dev/ttyUSB0)
+    pca301:port=<USB port of JeeLink device>	# e.q. /dev/ttyUSB0
+    pca301:retryCount=<Number of retries>		# e.q. 5 (since 1.7.2)
 
 ## Binding
 The binding configuration of a PCA301 item looks as follwing:
