@@ -38,6 +38,7 @@ public class PCA301Binding extends AbstractBinding<PCA301BindingProvider> implem
 	private static final Logger logger = LoggerFactory.getLogger(PCA301Binding.class);
 	
 	private final static String KEY_PORT = "port";
+	private final static String KEY_RETRY_COUNT = "retryCount";
 	
 	private final Map<Integer, Integer> channels = new HashMap<Integer, Integer>();
 	
@@ -73,7 +74,7 @@ public class PCA301Binding extends AbstractBinding<PCA301BindingProvider> implem
 		if (command instanceof OnOffType) {
 			
 			final OnOffType switchValue = (OnOffType)command;
-			switchItem(itemName, switchValue == OnOffType.ON);
+			executeCommand(itemName, switchValue == OnOffType.ON);
 		}
 	}
 
@@ -87,11 +88,11 @@ public class PCA301Binding extends AbstractBinding<PCA301BindingProvider> implem
 		if (newState instanceof OnOffType) {
 			
 			final OnOffType switchValue = (OnOffType)newState;
-			switchItem(itemName, switchValue == OnOffType.ON);
+			executeCommand(itemName, switchValue == OnOffType.ON);
 		}
 	}
 	
-	private void switchItem(String itemName, boolean value) {
+	private void executeCommand(String itemName, boolean value) {
 		
 		for (PCA301BindingProvider provider : providers) {
 			
@@ -175,13 +176,25 @@ public class PCA301Binding extends AbstractBinding<PCA301BindingProvider> implem
 			
 			// read serial port name
 			final String port = (String) config.get(KEY_PORT);
-			if (StringUtils.isEmpty(port)) {
+			if (StringUtils.isBlank(port)) {
 				logger.error("Port of JeeLink device is missing");
 				throw new ConfigurationException(KEY_PORT, "The port can't be empty");
 			}
 			
+			// read retry count, default is zero
+			int retryCount = 0;
+			final String retryCountValue = (String) config.get(KEY_RETRY_COUNT);
+			if (StringUtils.isNotBlank(retryCountValue)) {
+				try {
+					retryCount = Integer.parseInt(retryCountValue);
+					
+				} catch (final NumberFormatException e) {
+					logger.error("Failed to read retry count value: " + retryCountValue, e);
+				}
+			}
+			
 			// create and open JeeLink device
-			device = new JeeLinkDevice(port);
+			device = new JeeLinkDevice(port, retryCount);
 			device.addListener(this);
 			device.open();
 		}

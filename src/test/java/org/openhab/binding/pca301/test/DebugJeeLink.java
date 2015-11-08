@@ -54,7 +54,7 @@ public class DebugJeeLink {
 		
 		logger.info("Create and open device on port " + port);
 		
-		final JeeLinkDevice dev = new JeeLinkDevice(port);
+		final JeeLinkDevice dev = new JeeLinkDevice(port, 0);
 		dev.addListener(listener);
 		dev.open();
 		
